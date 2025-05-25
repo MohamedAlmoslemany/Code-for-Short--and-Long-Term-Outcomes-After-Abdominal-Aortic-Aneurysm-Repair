@@ -1,0 +1,393 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix, classification_report
+from sklearn.preprocessing import StandardScaler
+from imblearn.over_sampling import SMOTE
+import xgboost as xgb
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import brier_score_loss
+import warnings
+warnings.filterwarnings('ignore')
+
+# Load VQI AAA repair data (185,362 patients)
+print("Loading Vascular Quality Initiative (VQI) AAA repair data...")
+data = pd.read_csv("vqi_aaa_data.csv")
+
+print(f"Total patients: {len(data):,}")
+print(f"Endovascular repairs (EVAR): {(data['REPAIR_TYPE'] == 'EVAR').sum():,} ({(data['REPAIR_TYPE'] == 'EVAR').mean()*100:.1f}%)")
+print(f"Open repairs: {(data['REPAIR_TYPE'] == 'OPEN').sum():,} ({(data['REPAIR_TYPE'] == 'OPEN').mean()*100:.1f}%)")
+print(f"Ruptured presentations: {(data['RUPTURED'] == 1).sum():,} ({(data['RUPTURED'] == 1).mean()*100:.1f}%)")
+
+# Define multiple outcome variables for comprehensive prediction
+outcomes = {
+    # Short-term perioperative outcomes
+    'MORTALITY_30DAY': '30-Day Mortality',
+    'MI_PERIOP': 'Perioperative Myocardial Infarction', 
+    'RENAL_FAILURE_NEW': 'New Renal Failure',
+    'SPINAL_CORD_ISCHEMIA': 'Spinal Cord Ischemia',
+    'ISCHEMIC_COLITIS': 'Ischemic Colitis',
+    'BUTTOCK_CLAUDICATION': 'Buttock Claudication',
+    'MAJOR_COMPLICATIONS': 'Major Complications (Composite)',
+    'PROLONGED_LOS': 'Prolonged Hospital Stay (>7 days)',
+    
+    # Long-term outcomes
+    'OVERALL_SURVIVAL_1YR': '1-Year Overall Survival',
+    'AAA_RELATED_MORTALITY': 'Aneurysm-Related Mortality',
+    'REINTERVENTION': 'Reintervention Required',
+    'ENDOLEAK': 'Endoleak Development',
+    'GRAFT_INFECTION': 'Graft Infection',
+    'RUPTURE_RELATED_MORTALITY': 'Rupture-Related Mortality'
+}
+
+# Define comprehensive predictor sets
+predictors_preop = [
+    # Demographics and comorbidities
+    'AGE', 'GENDER', 'BMI', 'RACE', 'ETHNICITY', 'PRIMARYINSURER', 'RURAL',
+    'ADI_NATRANK_MEDIAN', 'SETTING',
+    
+    # Medical history
+    'HTN', 'PREOP_DIABETES', 'PREOP_SMOKING', 'PRIOR_CAD', 'PREOP_DYSRHYTHMIA',
+    'PRIOR_CHF', 'PRIOR_CVD', 'COPD', 'DIALYSIS', 'PRIOR_CABG', 'PRIOR_PCI',
+    'LIVINGSTATUS', 'PREOP_FUNCSTATUS', 'PREOP_AMBUL', 'PREOP_CREAT_UMOL',
+    'STRESS', 'PREOP_ASA', 'PREOP_P2Y', 'PREOP_STATIN', 'PREOP_ACE', 'PREOP_ANTICOAG',
+    
+    # AAA characteristics
+    'AAA_DIAMETER', 'AAA_LOCATION', 'AAA_MORPHOLOGY', 'ILIAC_INVOLVEMENT',
+    'NECK_LENGTH', 'NECK_ANGLE', 'PRIOR_AAA_REPAIR', 'FAMILY_HISTORY_AAA',
+    'SYMPTOMATIC_AAA', 'RUPTURED', 'REPAIR_TYPE', 'URGENCY',
+    
+    # Anatomical factors
+    'ANEURYSM_EXTENT', 'INFRARENAL', 'JUXTARENAL', 'PARARENAL', 'SUPRARENAL'
+]
+
+predictors_intraop = predictors_preop + [
+    # Intraoperative factors
+    'ACCSITE_1', 'ACCSIDE_1', 'ACCGUIDE_1', 'LGSHEATH_1',
+    'PROC_ANTICOAGULANT', 'CONTRAST', 'FLUOROTIME', 'ENDOGRAFT_TYPE', 'ENDOGRAFT_SIZE',
+    'PROCEDURAL_COMPLICATIONS', 'TECHNICAL_SUCCESS', 'OPERATIVE_TIME',
+    'BLOOD_LOSS', 'TRANSFUSION_REQUIRED'
+]
+
+predictors_postop = predictors_intraop + [
+    # Immediate postoperative factors
+    'IMMEDIATE_POSTOP_COMPLICATIONS', 'ICU_STAY', 'VENTILATOR_DAYS',
+    'INITIAL_TECHNICAL_SUCCESS'
+]
+
+# Initialize models
+models = {
+    'XGBoost': xgb.XGBClassifier(random_state=42, eval_metric='logloss'),
+    'Random Forest': RandomForestClassifier(random_state=42),
+    'SVM': SVC(probability=True, random_state=42),
+    'Neural Network': MLPClassifier(random_state=42, max_iter=1000),
+    'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000)
+}
+
+# Define parameter grids for hyperparameter tuning
+param_grids = {
+    'XGBoost': {
+        'max_depth': [3, 4, 5, 6],
+        'n_estimators': [100, 200, 300],
+        'learning_rate': [0.01, 0.1, 0.2],
+        'subsample': [0.8, 0.9, 1.0],
+        'colsample_bytree': [0.8, 0.9, 1.0]
+    },
+    'Random Forest': {
+        'n_estimators': [100, 200, 300],
+        'max_depth': [10, 20, 30, None],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4]
+    },
+    'SVM': {
+        'C': [0.001, 0.01, 0.1, 1, 10, 100],
+        'gamma': ['scale', 'auto', 0.001, 0.01, 0.1, 1]
+    },
+    'Neural Network': {
+        'hidden_layer_sizes': [(50,), (100,), (50, 50), (100, 50)],
+        'alpha': [0.0001, 0.001, 0.01],
+        'learning_rate_init': [0.001, 0.01, 0.1]
+    },
+    'Logistic Regression': {
+        'C': [0.001, 0.01, 0.1, 1, 10, 100],
+        'penalty': ['l1', 'l2'],
+        'solver': ['liblinear', 'saga']
+    }
+}
+
+# Function to train and evaluate models for each outcome
+def train_evaluate_outcome(outcome_name, outcome_description, predictors):
+    print(f"\n{'='*80}")
+    print(f"TRAINING MODELS FOR: {outcome_description}")
+    print(f"{'='*80}")
+    
+    # Prepare data
+    X = data[predictors].copy()
+    y = data[outcome_name].copy()
+    
+    # Handle missing values
+    X = X.fillna(X.median() if X.select_dtypes(include=[np.number]).shape[1] > 0 else 0)
+    
+    # Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+    
+    print(f"Training samples: {len(X_train):,}")
+    print(f"Test samples: {len(X_test):,}")
+    print(f"Event rate: {y.mean():.1%}")
+    
+    # Apply SMOTE for class balancing
+    smote = SMOTE(random_state=42)
+    X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
+    
+    # Standardize features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train_balanced)
+    X_test_scaled = scaler.transform(X_test)
+    
+    results = {}
+    trained_models = {}
+    
+    # Train each model
+    for name, model in models.items():
+        print(f"\nTraining {name}...")
+        
+        # Choose appropriate data
+        if name in ['SVM', 'Neural Network']:
+            X_train_use = X_train_scaled
+            X_test_use = X_test_scaled
+        else:
+            X_train_use = X_train_balanced
+            X_test_use = X_test
+        
+        # Grid search with cross-validation
+        grid_search = GridSearchCV(
+            model, 
+            param_grids[name], 
+            cv=5, 
+            scoring='roc_auc', 
+            n_jobs=-1,
+            verbose=0
+        )
+        
+        try:
+            grid_search.fit(X_train_use, y_train_balanced)
+            best_model = grid_search.best_estimator_
+            trained_models[name] = best_model
+            
+            # Predictions
+            y_pred_proba = best_model.predict_proba(X_test_use)[:, 1]
+            y_pred = best_model.predict(X_test_use)
+            
+            # Calculate metrics
+            auc_score = roc_auc_score(y_test, y_pred_proba)
+            brier_score = brier_score_loss(y_test, y_pred_proba)
+            
+            results[name] = {
+                'auc': auc_score,
+                'brier_score': brier_score,
+                'y_pred_proba': y_pred_proba,
+                'y_pred': y_pred,
+                'best_params': grid_search.best_params_
+            }
+            
+            print(f"{name:<20} AUC: {auc_score:.4f}, Brier: {brier_score:.4f}")
+            
+        except Exception as e:
+            print(f"Error training {name}: {str(e)}")
+            continue
+    
+    return results, trained_models, X_test, y_test, scaler
+
+# Function to create comprehensive visualizations
+def create_outcome_visualizations(outcome_description, results, X_test, y_test):
+    # ROC Curves
+    plt.figure(figsize=(12, 5))
+    
+    # ROC curve
+    plt.subplot(1, 2, 1)
+    for name, result in results.items():
+        fpr, tpr, _ = roc_curve(y_test, result['y_pred_proba'])
+        plt.plot(fpr, tpr, label=f"{name} (AUC: {result['auc']:.3f})")
+    
+    plt.plot([0, 1], [0, 1], 'k--', label='Random')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'ROC Curves - {outcome_description}')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Calibration plot for best model
+    plt.subplot(1, 2, 2)
+    best_model_name = max(results.keys(), key=lambda k: results[k]['auc'])
+    best_result = results[best_model_name]
+    
+    fraction_of_positives, mean_predicted_value = calibration_curve(
+        y_test, best_result['y_pred_proba'], n_bins=10
+    )
+    plt.plot(mean_predicted_value, fraction_of_positives, "s-", label=f'{best_model_name}')
+    plt.plot([0, 1], [0, 1], "k:", label="Perfect calibration")
+    plt.xlabel('Mean Predicted Probability')
+    plt.ylabel('Fraction of Positives')
+    plt.title(f'Calibration Plot - {outcome_description}')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+# Function for subgroup analysis
+def subgroup_analysis(outcome_name, best_model, X_test, y_test, scaler, model_name):
+    print(f"\nSubgroup Analysis for {outcome_name}:")
+    print("-" * 60)
+    
+    # Age-based subgroups
+    age_70_mask = X_test['AGE'] >= 70
+    age_under70_mask = X_test['AGE'] < 70
+    
+    # Aneurysm extent subgroups
+    infrarenal_mask = X_test['INFRARENAL'] == 1
+    juxta_para_supra_mask = (X_test['JUXTARENAL'] == 1) | (X_test['PARARENAL'] == 1) | (X_test['SUPRARENAL'] == 1)
+    
+    # Prepare data for prediction
+    if model_name in ['SVM', 'Neural Network']:
+        X_test_use = scaler.transform(X_test)
+    else:
+        X_test_use = X_test
+    
+    subgroups = {
+        'Age < 70 years': age_under70_mask,
+        'Age ≥ 70 years': age_70_mask,
+        'Infrarenal AAA': infrarenal_mask,
+        'Juxta/Para/Suprarenal AAA': juxta_para_supra_mask
+    }
+    
+    for subgroup_name, mask in subgroups.items():
+        if mask.sum() > 50:  # Ensure sufficient sample size
+            try:
+                subgroup_pred = best_model.predict_proba(X_test_use[mask])[:, 1]
+                subgroup_auc = roc_auc_score(y_test[mask], subgroup_pred)
+                print(f"{subgroup_name:<25} AUC: {subgroup_auc:.3f} (n={mask.sum():,})")
+            except:
+                print(f"{subgroup_name:<25} Unable to calculate AUC (n={mask.sum():,})")
+
+# Ruptured AAA analysis
+def ruptured_aaa_analysis():
+    print(f"\n{'='*80}")
+    print("RUPTURED AAA MORTALITY ANALYSIS: ENDOVASCULAR vs OPEN REPAIR")
+    print(f"{'='*80}")
+    
+    # Filter ruptured cases
+    ruptured_data = data[data['RUPTURED'] == 1].copy()
+    
+    if len(ruptured_data) > 0:
+        evar_ruptured = ruptured_data[ruptured_data['REPAIR_TYPE'] == 'EVAR']
+        open_ruptured = ruptured_data[ruptured_data['REPAIR_TYPE'] == 'OPEN']
+        
+        print(f"Ruptured EVAR cases: {len(evar_ruptured):,}")
+        print(f"Ruptured Open cases: {len(open_ruptured):,}")
+        
+        if len(evar_ruptured) > 0 and len(open_ruptured) > 0:
+            evar_mortality = evar_ruptured['MORTALITY_30DAY'].mean()
+            open_mortality = open_ruptured['MORTALITY_30DAY'].mean()
+            
+            print(f"30-day mortality - EVAR: {evar_mortality:.1%}")
+            print(f"30-day mortality - Open: {open_mortality:.1%}")
+            print(f"Mortality difference: {(open_mortality - evar_mortality):.1%}")
+
+# Main analysis workflow
+def main_analysis():
+    print("MACHINE LEARNING-BASED PREDICTION OF AAA REPAIR OUTCOMES")
+    print("=" * 80)
+    print("Vascular Quality Initiative (VQI) Analysis")
+    print(f"Total patients: {len(data):,}")
+    
+    # Store all results
+    all_results = {}
+    
+    # Analyze each outcome
+    for outcome_key, outcome_description in outcomes.items():
+        if outcome_key in data.columns:
+            try:
+                # Train models
+                results, trained_models, X_test, y_test, scaler = train_evaluate_outcome(
+                    outcome_key, outcome_description, predictors_preop
+                )
+                
+                if results:
+                    all_results[outcome_key] = {
+                        'results': results,
+                        'description': outcome_description
+                    }
+                    
+                    # Create visualizations
+                    create_outcome_visualizations(outcome_description, results, X_test, y_test)
+                    
+                    # Subgroup analysis for best model
+                    best_model_name = max(results.keys(), key=lambda k: results[k]['auc'])
+                    best_model = trained_models[best_model_name]
+                    subgroup_analysis(outcome_description, best_model, X_test, y_test, scaler, best_model_name)
+                    
+            except Exception as e:
+                print(f"Error analyzing {outcome_description}: {str(e)}")
+                continue
+    
+    # Summary of all outcomes
+    print(f"\n{'='*80}")
+    print("SUMMARY OF MODEL PERFORMANCE ACROSS ALL OUTCOMES")
+    print(f"{'='*80}")
+    
+    summary_data = []
+    for outcome_key, outcome_data in all_results.items():
+        results = outcome_data['results']
+        description = outcome_data['description']
+        
+        best_model = max(results.keys(), key=lambda k: results[k]['auc'])
+        best_auc = results[best_model]['auc']
+        best_brier = results[best_model]['brier_score']
+        
+        # Compare with logistic regression
+        lr_auc = results['Logistic Regression']['auc'] if 'Logistic Regression' in results else 0
+        improvement = best_auc - lr_auc
+        
+        summary_data.append({
+            'Outcome': description,
+            'Best Model': best_model,
+            'Best AUC': best_auc,
+            'Brier Score': best_brier,
+            'LR AUC': lr_auc,
+            'Improvement': improvement
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    print(summary_df.to_string(index=False, float_format='%.3f'))
+    
+    # Ruptured AAA specific analysis
+    ruptured_aaa_analysis()
+    
+    print(f"\n{'='*80}")
+    print("ANALYSIS COMPLETE")
+    print(f"{'='*80}")
+    
+    return all_results
+
+# Required data columns message
+print("\nRequired CSV columns for comprehensive analysis:")
+print("=" * 60)
+print("Target variables (outcomes):")
+for outcome_key, outcome_desc in outcomes.items():
+    print(f"  - {outcome_key}: {outcome_desc}")
+
+print("\nPredictor variables:")
+for predictor in predictors_preop:
+    print(f"  - {predictor}")
+
+print("\nEnsure your VQI data file is named 'vqi_aaa_data.csv'")
+print("and contains all required columns before running the analysis.")
