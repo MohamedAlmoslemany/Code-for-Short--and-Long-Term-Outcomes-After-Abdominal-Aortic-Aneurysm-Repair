@@ -1,58 +1,16 @@
 # Code-for-Short--and-Long-Term-Outcomes-After-Abdominal-Aortic-Aneurysm-Repair
 
 Purpose:
-To implement an end-to-end machine-learning workflow that ingests real-world VQI data on abdominal aortic aneurysm (AAA) repairs and delivers validated risk-prediction models for both short-term (e.g., 30-day mortality, myocardial infarction, acute kidney injury) and long-term outcomes (e.g., 1-year survival, endoleak, reintervention). The goal is to provide clinicians and quality-improvement teams with calibrated decision-support tools and clear performance reporting.
+This repository delivers a fully automated machine‐learning pipeline designed to predict a comprehensive set of clinical outcomes following abdominal aortic aneurysm (AAA) repair. By leveraging the Vascular Quality Initiative’s multi‐center dataset, the workflow aims to generate accurate, calibrated risk estimates—ranging from perioperative endpoints such as 30-day mortality, myocardial infarction, and acute kidney injury to long-term metrics like one-year survival, aneurysm-related mortality, and reintervention rates. Ultimately, these models serve as decision‐support tools for clinicians and quality‐improvement teams seeking to benchmark performance and individualize patient care.
 
 Inputs:
-
-A CSV file named vqi_aaa_data.csv containing:
-
-Outcome columns:
-
-MORTALITY_30DAY, MI_PERIOP, RENAL_FAILURE_NEW, SPINAL_CORD_ISCHEMIA,
-
-ISCHEMIC_COLITIS, BUTTOCK_CLAUDICATION, MAJOR_COMPLICATIONS, PROLONGED_LOS,
-
-OVERALL_SURVIVAL_1YR, AAA_RELATED_MORTALITY, REINTERVENTION, ENDOLEAK,
-
-GRAFT_INFECTION, RUPTURE_RELATED_MORTALITY
-
-Predictor columns (preop, intraop, postop as defined in the script)
-
-Python environment with the required libraries installed:
-pandas, numpy, scikit-learn, imbalanced-learn, xgboost, matplotlib, seaborn
+Outcome variables (e.g., MORTALITY_30DAY, MI_PERIOP, RENAL_FAILURE_NEW, etc.) and a rich set of predictors spanning preoperative (demographics, comorbidities, aneurysm anatomy), intraoperative (access site, graft details, procedural metrics), and immediate postoperative factors (ICU stay, complications). A compatible Python environment (3.7+) with the following libraries installed—pandas, numpy, scikit-learn, imbalanced-learn, xgboost, matplotlib, and seaborn—is required to execute the analysis.
 
 Outputs:
-
-Console logs summarizing cohort characteristics, training/test splits, event rates, and model metrics.
-
-Tabular summary of best-performing models per outcome (AUC, Brier score, improvement over logistic regression).
-
-Publication-quality Matplotlib figures:
-
-ROC curves for all classifiers
-
-Calibration plots for the top model
-
-Subgroup AUC analyses by age (<70 vs. ≥70) and aneurysm extent (infrarenal vs. juxta/para/suprarenal).
-
-Separate mortality comparison for ruptured EVAR vs. open repair cases.
+Upon execution, the script prints cohort summaries (patient counts, repair types, rupture rate), training/testing splits, event rates, and model performance metrics (ROC-AUC, Brier score) directly to the console. It then generates publication-quality plots—ROC curves for all classifiers and calibration plots for the top model—along with a tabular summary comparing the best model per outcome against the logistic regression baseline. Subgroup analyses by age and aneurysm extent are also displayed, and a dedicated rupture analysis reports observed 30-day mortality for EVAR versus open repair in ruptured cases.
 
 Constraints:
-
-Data completeness: All specified columns must be present and free of critical formatting errors.
-
-Memory/compute: Hyperparameter tuning on ~185k rows can be time- and memory-intensive; consider down-sampling or distributed compute if needed.
-
-Software versions: Tested on Python 3.7+; dependency versions should match those in requirements.txt.
-
-Imbalance handling: SMOTE is applied for rare outcomes—results depend on appropriate class-imbalance settings.
-
-
-
-
-
-
+The pipeline assumes complete and correctly formatted data: all specified outcome and predictor columns must be present in the CSV. Hyperparameter tuning on a dataset of ~185,000 records can be computationally demanding; users may need to adjust CV folds, down-sample, or leverage distributed resources to fit within time and memory limits. Finally, the use of SMOTE to address class imbalance necessitates careful consideration of rare‐event definitions and oversampling parameters, as these choices directly influence model calibration and generalizability.
 
 
 
